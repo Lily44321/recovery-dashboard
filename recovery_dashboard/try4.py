@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-随机森林建模与交互面板（预计算缓存版）
+随机森林建模与交互面板（预计算缓存版）- 修复路径问题
 """
 
 import pandas as pd
@@ -12,26 +12,32 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 import warnings
 import os
-import json
 
 warnings.filterwarnings('ignore')
 
-# ==================== 缓存文件路径 ====================
-IMPORTANCE_CACHE = "importance_cache.csv"
-METRICS_CACHE = "metrics_cache.csv"
-INDUSTRY_CORR_CACHE = "industry_corr_cache.csv"
-PROVINCE_CORR_CACHE = "province_corr_cache.csv"
-DATA_CACHE = "data_cached.parquet"      # 使用 parquet 格式，更快更小
+# ==================== 获取脚本所在目录（重要！） ====================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ==================== 缓存文件路径（基于脚本目录） ====================
+IMPORTANCE_CACHE = os.path.join(BASE_DIR, "importance_cache.csv")
+METRICS_CACHE = os.path.join(BASE_DIR, "metrics_cache.csv")
+INDUSTRY_CORR_CACHE = os.path.join(BASE_DIR, "industry_corr_cache.csv")
+PROVINCE_CORR_CACHE = os.path.join(BASE_DIR, "province_corr_cache.csv")
+DATA_CACHE = os.path.join(BASE_DIR, "data_cached.parquet")
+EXCEL_PATH = os.path.join(BASE_DIR, "recovery_final.xlsx")   # 如果不想上传 Excel，可以注释掉相关代码，但此处保留
 
 
-# ==================== 1. 数据加载与预处理（仅第一次执行） ====================
+# ==================== 1. 数据加载与预处理 ====================
 @st.cache_data
 def load_and_preprocess():
-    df = pd.read_excel('recovery_final.xlsx', sheet_name='Sheet1')
+    # 如果 Excel 文件不存在，抛出友好提示
+    if not os.path.exists(EXCEL_PATH):
+        st.error(f"找不到数据文件: {EXCEL_PATH}。请确保 recovery_final.xlsx 已上传。")
+        st.stop()
+    df = pd.read_excel(EXCEL_PATH, sheet_name='Sheet1')
 
     if '年月' in df.columns:
         df['year'] = df['年月'] // 100
@@ -66,7 +72,7 @@ def load_and_preprocess():
     return X, y, preprocessor, df, numeric_features
 
 
-# ==================== 2. 建模与分析（300次） ====================
+# ==================== 2. 建模与分析（300次，并保存结果） ====================
 def run_analysis_and_save(n_iter=300):
     """运行300次建模，保存所有结果到缓存文件"""
     X, y, preprocessor, df_raw, numeric_features = load_and_preprocess()
@@ -82,13 +88,12 @@ def run_analysis_and_save(n_iter=300):
     industry_corr = {}
     province_corr = {}
 
-    # 使用 Streamlit 进度条（仅在第一次运行时可见）
     progress_bar = st.progress(0)
     status_text = st.empty()
 
     for i in range(n_iter):
         progress_bar.progress((i + 1) / n_iter)
-        status_text.text(f"正在建模：第 {i + 1}/{n_iter} 次...")
+        status_text.text(f"正在建模：第 {i+1}/{n_iter} 次...")
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=i)
 
         pipe = Pipeline(steps=[('preprocessor', preprocessor),
@@ -110,7 +115,6 @@ def run_analysis_and_save(n_iter=300):
         all_r2.append(r2)
         all_rmse.append(rmse)
 
-        # 计算每个行业/省份的相关系数
         for ind in industries:
             sub = X_test[X_test['商品编码'] == ind].copy()
             if len(sub) > 5:
@@ -125,18 +129,15 @@ def run_analysis_and_save(n_iter=300):
     progress_bar.empty()
     status_text.empty()
 
-    # 平均重要性
     avg_importances = np.mean(all_importances, axis=0)
     importance_df = pd.DataFrame({'feature': feature_names, 'importance': avg_importances})
     importance_df = importance_df.sort_values('importance', ascending=False)
 
-    # 性能指标
     avg_r2 = np.mean(all_r2)
     avg_rmse = np.mean(all_rmse)
     std_r2 = np.std(all_r2)
     std_rmse = np.std(all_rmse)
 
-    # 行业/省份相关系数
     industry_corr_avg = {k: np.mean(v) for k, v in industry_corr.items() if v}
     industry_corr_df = pd.DataFrame(list(industry_corr_avg.items()), columns=['行业', 'correlation'])
     industry_corr_df = industry_corr_df.sort_values('correlation', ascending=False)
@@ -145,7 +146,6 @@ def run_analysis_and_save(n_iter=300):
     province_corr_df = pd.DataFrame(list(province_corr_avg.items()), columns=['省份', 'correlation'])
     province_corr_df = province_corr_df.sort_values('correlation', ascending=False)
 
-    # 保存到 CSV
     importance_df.to_csv(IMPORTANCE_CACHE, index=False)
     pd.DataFrame([{
         'avg_r2': avg_r2,
@@ -155,8 +155,6 @@ def run_analysis_and_save(n_iter=300):
     }]).to_csv(METRICS_CACHE, index=False)
     industry_corr_df.to_csv(INDUSTRY_CORR_CACHE, index=False)
     province_corr_df.to_csv(PROVINCE_CORR_CACHE, index=False)
-
-    # 保存预处理后的完整数据（用于散点图等交互）
     df_raw.to_parquet(DATA_CACHE, index=False)
 
     print("所有缓存文件已保存完成。")
@@ -202,7 +200,6 @@ def main():
         st.session_state.province_corr_df = province_corr_df
         st.session_state.df_raw = df_raw
     else:
-        # 直接加载缓存
         with st.spinner("加载预计算结果中..."):
             (importance_df, perf, industry_corr_df, province_corr_df, df_raw) = load_cached_results()
         st.session_state.analyzed = True
@@ -213,7 +210,6 @@ def main():
         st.session_state.df_raw = df_raw
         st.info("已加载预计算结果，无需重新建模。")
 
-    # 展示结果
     if st.session_state.get('analyzed', False):
         importance_df = st.session_state.importance_df
         (avg_r2, std_r2, avg_rmse, std_rmse) = st.session_state.perf
