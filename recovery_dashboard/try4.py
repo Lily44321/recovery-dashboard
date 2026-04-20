@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-随机森林建模与交互面板（预计算缓存版）- 修复路径问题
+随机森林建模与交互面板（预计算缓存版）- 修复散点图 + 可调节表格行数
 """
 
 import pandas as pd
@@ -18,22 +18,21 @@ import os
 
 warnings.filterwarnings('ignore')
 
-# ==================== 获取脚本所在目录（重要！） ====================
+# ==================== 获取脚本所在目录 ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ==================== 缓存文件路径（基于脚本目录） ====================
+# ==================== 缓存文件路径 ====================
 IMPORTANCE_CACHE = os.path.join(BASE_DIR, "importance_cache.csv")
 METRICS_CACHE = os.path.join(BASE_DIR, "metrics_cache.csv")
 INDUSTRY_CORR_CACHE = os.path.join(BASE_DIR, "industry_corr_cache.csv")
 PROVINCE_CORR_CACHE = os.path.join(BASE_DIR, "province_corr_cache.csv")
 DATA_CACHE = os.path.join(BASE_DIR, "data_cached.parquet")
-EXCEL_PATH = os.path.join(BASE_DIR, "recovery_final.xlsx")   # 如果不想上传 Excel，可以注释掉相关代码，但此处保留
+EXCEL_PATH = os.path.join(BASE_DIR, "recovery_final.xlsx")
 
 
 # ==================== 1. 数据加载与预处理 ====================
 @st.cache_data
 def load_and_preprocess():
-    # 如果 Excel 文件不存在，抛出友好提示
     if not os.path.exists(EXCEL_PATH):
         st.error(f"找不到数据文件: {EXCEL_PATH}。请确保 recovery_final.xlsx 已上传。")
         st.stop()
@@ -72,9 +71,8 @@ def load_and_preprocess():
     return X, y, preprocessor, df, numeric_features
 
 
-# ==================== 2. 建模与分析（300次，并保存结果） ====================
+# ==================== 2. 建模与分析 ====================
 def run_analysis_and_save(n_iter=300):
-    """运行300次建模，保存所有结果到缓存文件"""
     X, y, preprocessor, df_raw, numeric_features = load_and_preprocess()
 
     feature_names = None
@@ -162,7 +160,6 @@ def run_analysis_and_save(n_iter=300):
 
 
 def load_cached_results():
-    """从缓存文件加载结果"""
     importance_df = pd.read_csv(IMPORTANCE_CACHE)
     metrics_df = pd.read_csv(METRICS_CACHE)
     avg_r2 = metrics_df['avg_r2'].iloc[0]
@@ -183,7 +180,6 @@ def main():
     st.title("分省分行业恢复指数影响因素分析")
     st.markdown("基于随机森林（300次重复随机划分）分析恢复指数的影响因素，并识别受美国影响最大的行业与省份。")
 
-    # 检查是否存在所有缓存文件
     cache_exists = all(os.path.exists(f) for f in [
         IMPORTANCE_CACHE, METRICS_CACHE, INDUSTRY_CORR_CACHE, PROVINCE_CORR_CACHE, DATA_CACHE
     ])
@@ -240,27 +236,41 @@ def main():
                           labels={'correlation': '相关系数', '省份': '省份（注册地编码）'})
         st.plotly_chart(fig_prov, use_container_width=True)
 
+        # ==================== 修改点1：散点图增加错误提示 ====================
         st.subheader("具体行业/省份关系探索")
         col1, col2 = st.columns(2)
+
         with col1:
             selected_industry = st.selectbox("选择行业（商品编码）", options=industry_corr_df['行业'].tolist())
-            industry_data = df_raw[df_raw['商品编码'].astype(str) == selected_industry]
+            # 确保筛选时类型一致（已经是字符串）
+            industry_data = df_raw[df_raw['商品编码'].astype(str) == str(selected_industry)]
             if not industry_data.empty:
                 fig_scatter = px.scatter(industry_data, x='对美国贸易比例', y='恢复指数',
                                          title=f"行业 {selected_industry} 美国贸易比例 vs 恢复指数",
                                          trendline="ols")
                 st.plotly_chart(fig_scatter, use_container_width=True)
+            else:
+                st.warning(f"⚠️ 行业 {selected_industry} 在数据中没有对应的记录，无法绘制散点图。")
+
         with col2:
             selected_province = st.selectbox("选择省份（注册地编码）", options=province_corr_df['省份'].tolist())
-            province_data = df_raw[df_raw['注册地编码'].astype(str) == selected_province]
+            province_data = df_raw[df_raw['注册地编码'].astype(str) == str(selected_province)]
             if not province_data.empty:
                 fig_scatter2 = px.scatter(province_data, x='对美国贸易比例', y='恢复指数',
                                           title=f"省份 {selected_province} 美国贸易比例 vs 恢复指数",
                                           trendline="ols")
                 st.plotly_chart(fig_scatter2, use_container_width=True)
+            else:
+                st.warning(f"⚠️ 省份 {selected_province} 在数据中没有对应的记录，无法绘制散点图。")
 
+        # ==================== 修改点2：数据预览可调节行数 ====================
         st.subheader("数据预览")
-        st.dataframe(df_raw.head(100))
+        # 添加一个滑块让用户选择显示行数（最大可显示全部数据）
+        max_rows = len(df_raw)
+        n_rows = st.slider("显示行数", min_value=10, max_value=min(1000, max_rows), value=100, step=10)
+        st.dataframe(df_raw.head(n_rows))
+        st.caption(f"共 {max_rows} 行数据，当前显示前 {n_rows} 行。")
+
     else:
         st.info("等待分析结果...")
 
